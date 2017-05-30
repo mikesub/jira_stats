@@ -1,3 +1,5 @@
+# pylint: disable=invalid-name
+
 from work_hours import hours_spent
 
 '''
