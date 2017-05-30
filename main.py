@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
+
 import sys
+from copy import deepcopy
 import requests
 import config
 from work_hours import hours_spent
-from copy import deepcopy
-import numpy
 
-quota_labels = {'mc', 'tb', 'tp', 'eng', 'in'}
-output = ''
 
 try:
-    debug_issue = sys.argv[1]
+    ISSUE_TO_DEBUG = sys.argv[1]
 except IndexError:
-    debug_issue = False
+    ISSUE_TO_DEBUG = False
 
 
 def log(*args):
-    if debug_issue:
+    if ISSUE_TO_DEBUG:
         print(*args)
 
 
 def make_request(url, **kwargs):
-    r = requests.post(url, **kwargs)
-    r.raise_for_status()
-    return r.json()
+    req = requests.post(url, **kwargs)
+    req.raise_for_status()
+    return req.json()
 
 
 def includes_status_change(item):
@@ -36,12 +34,12 @@ def includes_project_change(item):
 
 def extract_status_change(item):
     entry = [i for i in item['items'] if i['field'] == 'status'][0]
-    r = {
+    result = {
         'date': item['created'],
         'from': entry['fromString'],
         'to': entry['toString'],
     }
-    return r
+    return result
 
 
 def extract_transitions(histories):
@@ -53,10 +51,8 @@ def extract_transitions(histories):
                 project_change_encountered = True
             if project_change_encountered:
                 histories_.append(i)
-
     else:
         histories_ = histories
-
     return [extract_status_change(i) for i in histories_ if includes_status_change(i)]
 
 
@@ -97,75 +93,85 @@ def get_hours(transitions):
 
 
 def convert_hours(i):
-    r = deepcopy(i)
+    result = deepcopy(i)
     hours = get_hours(i['transitions'])
-    r['transitions'] = hours
-    if debug_issue:
+    result['transitions'] = hours
+    if ISSUE_TO_DEBUG:
         log('-----------------------')
-        for k, v in hours.items():
-            print(str(v).rjust(3), k)
-    return r
+        for key, value in hours.items():
+            print(str(value).rjust(3), key)
+    return result
 
 
 def calculate_totals(i):
-    r = deepcopy(i)
-    total = sum(r['transitions'].values())
-    r['transitions']['_total_wo_todo'] = sum(v for k, v in r['transitions'].items() if k not in config.skipped_statuses)
-    r['transitions']['_total'] = total
-    log(str(total).rjust(3), 'total')
-    log(str(r['transitions']['_total_wo_todo']).rjust(3), 'w/o To Do')
-    return r
-
-issues = make_request(
-    '{}/rest/api/2/search'.format(config.url),
-    auth=(config.login, config.password),
-    json={
-        "jql": config.jql if not debug_issue else 'key={}'.format(debug_issue),
-        "maxResults": 300,
-        "fields": ['labels', 'summary'],
-        "expand": ['changelog']
-    },
-)['issues']
-
-issues = [strip_issue(i) for i in issues]
-issues = [convert_hours(i) for i in issues]
-issues = [calculate_totals(i) for i in issues]
-
-if debug_issue:
-    sys.exit()
-
-result = {k: 0 for k in quota_labels}
-issues_by_quota = {k: [] for k in quota_labels}
-
-for issue in issues:
-    if not len(issue['labels']):
-        output += 'skip {} {}\n'.format(issue['key'].ljust(7), issue['summary'])
-        continue
-    issue_quota_labels = quota_labels.intersection(issue['labels'])
-    hours_share = issue['transitions']['_total_wo_todo'] / len(issue_quota_labels)
-    for q in issue_quota_labels:
-        result[q] += hours_share
-
-total_time = sum(result.values())
-percentage = {k: round(v/total_time*100) for k, v in result.items()}
-
-for k, v in percentage.items():
-    '\n{} {}%\n'.format(k.upper().ljust(3), v)
+    result = deepcopy(i)
+    total = sum(result['transitions'].values())
+    total_dev = sum(v for k, v in result['transitions'].items() if k not in config.SKIPPED_STATUSES)
+    result['transitions']['_total_dev'] = total_dev
+    result['transitions']['_total'] = total
+    log('-----------------------')
+    log(str(total).rjust(3), 'Time Total')
+    log(str(result['transitions']['_total_dev']).rjust(3), 'Time in Development')
+    return result
 
 
-for label in quota_labels:
+def get_issues_time():
+    result = make_request(
+        '{}/rest/api/2/search'.format(config.URL),
+        auth=(config.LOGIN, config.PASSWORD),
+        json={
+            "jql": config.JQL if not ISSUE_TO_DEBUG else 'key={}'.format(ISSUE_TO_DEBUG),
+            "maxResults": 300,
+            "fields": ['labels', 'summary'],
+            "expand": ['changelog']
+        },
+    )['issues']
+
+    result = [strip_issue(i) for i in result]
+    result = [convert_hours(i) for i in result]
+    result = [calculate_totals(i) for i in result]
+    return result
+
+def main():
+    output = ''
+    issues = get_issues_time()
+    result = {key: 0 for key in config.QUOTA_LABELS}
+    issues_by_quota = {key: [] for key in config.QUOTA_LABELS}
+
     for issue in issues:
-        if label not in issue['labels']:
+        if not len(issue['labels']):
+            output += 'skip {} {}\n'.format(issue['key'].ljust(7), issue['summary'])
             continue
-        issues_by_quota[label].append(issue)
+        issue_quota_labels = config.QUOTA_LABELS.intersection(issue['labels'])
+        hours_share = issue['transitions']['_total_dev'] / len(issue_quota_labels)
+        for quota in issue_quota_labels:
+            result[quota] += hours_share
 
-for quota, issues_ in issues_by_quota.items():
-    output += '\n{} {}%\n'.format(quota.upper().ljust(3), percentage[quota])
-    for issue in sorted(issues_, key=lambda i: i['transitions']['_total_wo_todo'], reverse=True):
-        output += '{} {} {}\n'.format(
+    total_time = sum(result.values())
+    percentage = {key: round(value/total_time*100) for key, value in result.items()}
+
+    for label in config.QUOTA_LABELS:
+        for issue in issues:
+            if label not in issue['labels']:
+                continue
+            issues_by_quota[label].append(issue)
+
+    for quota, issues_ in issues_by_quota.items():
+        output += '\n{} {}%\n'.format(quota.upper().ljust(3), percentage[quota])
+        sorted_issues = sorted(issues_, key=lambda i: i['transitions']['_total_dev'], reverse=True)
+        for issue in sorted_issues:
+            output += '{} {} {}\n'.format(
                 issue['key'].ljust(7),
-                str(issue['transitions']['_total_wo_todo']).rjust(3),
+                str(issue['transitions']['_total_dev']).rjust(3),
                 issue['summary']
             )
 
-print(output)
+    for key, value in percentage.items():
+        output += '\n{} {}%'.format(key.upper().ljust(3), value)
+
+    return output
+
+if ISSUE_TO_DEBUG:
+    get_issues_time()
+else:
+    print(main())
