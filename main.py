@@ -139,10 +139,14 @@ def main():
     issues_by_quota = {key: [] for key in config.QUOTA_LABELS}
 
     for issue in issues:
-        if not len(issue['labels']):
-            output += 'skip {} {}\n'.format(issue['key'].ljust(7), issue['summary'])
-            continue
         issue_quota_labels = config.QUOTA_LABELS.intersection(issue['labels'])
+        if not issue_quota_labels:
+            output += 'skip {} {} {}\n'.format(
+                issue['key'].ljust(7),
+                issue['summary'],
+                issue['labels']
+            )
+            continue
         hours_share = issue['transitions']['_total_dev'] / len(issue_quota_labels)
         for quota in issue_quota_labels:
             result[quota] += hours_share
